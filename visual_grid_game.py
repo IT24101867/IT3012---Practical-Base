@@ -2,7 +2,7 @@
 import random
 import tkinter as tk
 
-from agent import SimpleReflexAgent, ModelBasedAgent
+from agent import SimpleReflexAgent, ModelBasedAgent, SearchAgent
 
 
 class VisualGridHuntGame:
@@ -71,6 +71,47 @@ class VisualGridHuntGame:
             'food_here': tuple(self.agent_pos) in self.food_positions
         }
 
+    # STEP 1.3: Full-observability percept for search-based (planning) agents.
+    # Search agents need to see the whole map to compute a path, unlike the
+    # reflex agents above which only see what's immediately around them.
+    def get_full_percept(self) -> dict:
+        return {
+            'agent_pos': tuple(self.agent_pos),
+            'remaining_food': list(self.food_positions),
+            'walls': self.walls,
+            'grid_size': (self.width, self.height)
+        }
+
+    # STEP 1.3: Direct grid movement for search agents (Up/Down/Left/Right move
+    # the agent by one cell immediately), separate from the turn-based
+    # Left/Right/Forward model used by the reflex agents above.
+    def execute_direct_action(self, action: str):
+        self.steps += 1
+        x, y = self.agent_pos
+
+        if action == 'Up':
+            new_pos = (x, y + 1)
+        elif action == 'Down':
+            new_pos = (x, y - 1)
+        elif action == 'Left':
+            new_pos = (x - 1, y)
+        elif action == 'Right':
+            new_pos = (x + 1, y)
+        elif action == 'Suck':
+            current_pos = tuple(self.agent_pos)
+            if current_pos in self.food_positions:
+                self.food_positions.remove(current_pos)
+                self.score += 20
+            return
+        else:
+            return
+
+        if (0 <= new_pos[0] < self.width and 0 <= new_pos[1] < self.height
+                and new_pos not in self.walls):
+            self.agent_pos = list(new_pos)
+        else:
+            self.score -= 5
+
     def execute_action(self, action: str):
         self.steps += 1
 
@@ -129,15 +170,20 @@ class VisualGridHuntGame:
 class GridGameGUI:
     """Tkinter wrapper that dynamically scales cell sizes to keep larger grids on screen."""
 
-    def __init__(self, root, width=10, height=10, num_food=12, num_opponents=2, walls=None, use_model_based=False):
+    def __init__(self, root, width=10, height=10, num_food=12, num_opponents=2, walls=None,
+                 use_model_based=False, agent_type='reflex'):
         self.root = root
         self.root.title("IT3012 - Scalable Multi-Agent Grid Hunt")
 
         self.env = VisualGridHuntGame(width=width, height=height, num_food=num_food, num_opponents=num_opponents,
                                       custom_walls=walls)
-        
-        # STEP 1.2 & 1.3: Choose which agent to use
-        if use_model_based:
+
+        # STEP 1.2, 1.3 & Practical 4: Choose which agent to use.
+        # agent_type: 'reflex' | 'model_based' | 'search' (SearchAgent using A*)
+        if agent_type == 'search':
+            self.agent = SearchAgent()
+            self.agent_type = "Search Agent (A*)"
+        elif use_model_based or agent_type == 'model_based':
             self.agent = ModelBasedAgent()
             self.agent_type = "Model-Based Agent"
         else:
@@ -237,18 +283,24 @@ class GridGameGUI:
 
         def step():
             if not self.env.is_done():
-                # Agent receives a PARTIAL percept (Step 1.1)
-                percept = self.env.get_percept()
+                if isinstance(self.agent, SearchAgent):
+                    # Practical 4: SearchAgent needs full observability to plan a path
+                    percept = self.env.get_full_percept()
+                    action = self.agent.sense_and_act(percept)
+                    self.env.execute_direct_action(action)
+                else:
+                    # Agent receives a PARTIAL percept (Step 1.1)
+                    percept = self.env.get_percept()
 
-                # Agent chooses an action (Step 1.2 or 1.3)
-                action = self.agent.sense_and_act(percept)
-                
-                # Update agent memory (for model-based agent - Step 1.3)
-                if hasattr(self.agent, 'update_memory'):
-                    self.agent.update_memory(action)
+                    # Agent chooses an action (Step 1.2 or 1.3)
+                    action = self.agent.sense_and_act(percept)
 
-                # Environment executes the action
-                self.env.execute_action(action)
+                    # Update agent memory (for model-based agent - Step 1.3)
+                    if hasattr(self.agent, 'update_memory'):
+                        self.agent.update_memory(action)
+
+                    # Environment executes the action
+                    self.env.execute_action(action)
 
                 # Update GUI
                 self.draw_grid()
@@ -299,7 +351,9 @@ class GridGameGUI:
         )
         
         # Recreate the agent
-        if self.agent_type == "Model-Based Agent":
+        if self.agent_type == "Search Agent (A*)":
+            self.agent = SearchAgent()
+        elif self.agent_type == "Model-Based Agent":
             self.agent = ModelBasedAgent()
         else:
             self.agent = SimpleReflexAgent()
@@ -312,33 +366,16 @@ class GridGameGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    
-    # Test Simple Reflex Agent (Step 1.2)
+
+    # Practical 4, Step 1.3.5: inject SearchAgent() instead of ModelBasedAgent()
+    # and observe the A* pathfinding in the visual grid.
     print("=" * 50)
-    print("STEP 1.2: Testing Simple Reflex Agent (NO MEMORY)")
+    print("PRACTICAL 4: Testing Search Agent (A* pathfinding)")
     print("=" * 50)
-    print("Expected behavior: Agent will get stuck in loops")
-    print("Watch for: Repeated turn left → move forward → hit wall pattern")
+    print("Expected behavior: Agent plans a direct path to the nearest food")
+    print("and walks straight to it instead of wandering or bumping walls.")
     print("=" * 50)
-    
-    # Create window with Simple Reflex Agent
-    app1 = GridGameGUI(root, width=12, height=12, num_food=15, num_opponents=0, use_model_based=False)
-    
-    # After 10 seconds, create a second window with Model-Based Agent
-    def create_model_based_window():
-        print("\n" + "=" * 50)
-        print("STEP 1.3: Testing Model-Based Agent (WITH MEMORY)")
-        print("=" * 50)
-        print("Expected behavior: Agent will remember positions and escape traps")
-        print("Watch for: Agent detecting loops and choosing alternate paths")
-        print("=" * 50)
-        
-        # Create new window with Model-Based Agent
-        root2 = tk.Tk()
-        app2 = GridGameGUI(root2, width=12, height=12, num_food=15, num_opponents=0, use_model_based=True)
-        root2.mainloop()
-    
-    # Schedule second window to open after 15 seconds
-    root.after(15000, create_model_based_window)
-    
+
+    app1 = GridGameGUI(root, width=12, height=12, num_food=15, num_opponents=0, agent_type='search')
+
     root.mainloop()
