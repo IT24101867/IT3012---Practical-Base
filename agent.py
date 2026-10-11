@@ -3,6 +3,7 @@ import random
 import math
 import heapq
 from collections import deque
+from logic_engine import KnowledgeBase
 
 class GreedyGridAgent:
     """A simple agent that tries to move around systematically to clear the grid."""
@@ -112,6 +113,11 @@ class SearchAgent:
         self.plan = []            # queued actions from the last search
         self.active_algo = 'AStar'  # 'BFS', 'UCS', or 'AStar'
 
+        # Practical 7: Knowledge Base holding the safety rules
+        self.kb = KnowledgeBase()
+        self.kb.tell_rule(['TargetVisible', 'HasDust'], 'SafeToEngage')        # Rule 1
+        self.kb.tell_rule(['SafeToEngage', 'BloodseekerMissing'], 'Retreat')   # Rule 2
+
     # ---------------- Step 1.1: Heuristic functions ----------------
     def manhattan_distance(self, pos, goal):
         x1, y1 = pos
@@ -164,8 +170,20 @@ class SearchAgent:
                     heapq.heappush(frontier, (g_cost + 1, npos, path_taken + [action]))
         return None
 
+    # ---------------- Practical 7: logical feasibility check ----------------
+    def _is_feasible(self, tile, tile_facts):
+        """A tile is Feasible unless the KB can prove 'Retreat' for it."""
+        self.kb.clear_facts()
+        for fact in tile_facts.get(tile, []):
+            self.kb.tell_fact(fact)
+        self.kb.forward_chain()
+        return 'Retreat' not in self.kb.facts
+
     # ---------------- Step 1.2: A* Search ----------------
-    def astar_search(self, start_pos, goal_pos, walls, grid_size, heuristic_type='manhattan'):
+    def astar_search(self, start_pos, goal_pos, walls, grid_size, heuristic_type='manhattan',
+                     tile_facts=None):
+        if tile_facts is None:
+            tile_facts = {}
         heuristic_fn = self.manhattan_distance if heuristic_type == 'manhattan' else self.euclidean_distance
 
         start_g = 0
@@ -186,6 +204,10 @@ class SearchAgent:
 
             for npos, action in self._neighbors(current_pos, walls, grid_size):
                 if npos in reached_states:
+                    continue
+                # Reachable (not a wall) is already guaranteed by _neighbors().
+                # Now check Feasible: skip tiles where the KB deduces 'Retreat'.
+                if not self._is_feasible(npos, tile_facts):
                     continue
                 g_new = g_cost + 1
                 h_new = heuristic_fn(npos, goal_pos)
@@ -213,15 +235,25 @@ class SearchAgent:
         if not remaining_food:
             return 'Suck'  # harmless no-op if nothing to collect
 
-        # Find the closest food item (by heuristic distance) to act as goal_pos
-        goal_pos = min(remaining_food, key=lambda f: self.manhattan_distance(agent_pos, f))
+        # Practical 7: per-tile facts supplied to the logic engine
+        # (the game does not generate these itself).
+        tile_facts = {
+            (1, 0): ['TargetVisible', 'HasDust', 'BloodseekerMissing'],  # deduces Retreat -> infeasible
+            (0, 1): ['TargetVisible', 'HasDust'],                        # Safe
+        }
 
-        if self.active_algo == 'AStar':
-            path = self.astar_search(agent_pos, goal_pos, walls, grid_size, heuristic_type='manhattan')
-        elif self.active_algo == 'UCS':
-            path = self.ucs_search(agent_pos, goal_pos, walls, grid_size)
-        else:  # BFS
-            path = self.bfs_search(agent_pos, goal_pos, walls, grid_size)
+        # Try food items nearest-first so one blocked/unsafe food doesn't stall the agent
+        path = None
+        for goal_pos in sorted(remaining_food, key=lambda f: self.manhattan_distance(agent_pos, f)):
+            if self.active_algo == 'AStar':
+                path = self.astar_search(agent_pos, goal_pos, walls, grid_size,
+                                         heuristic_type='manhattan', tile_facts=tile_facts)
+            elif self.active_algo == 'UCS':
+                path = self.ucs_search(agent_pos, goal_pos, walls, grid_size)
+            else:  # BFS
+                path = self.bfs_search(agent_pos, goal_pos, walls, grid_size)
+            if path:
+                break
 
         if not path:
             return 'Suck'  # stuck / unreachable food, no-op
